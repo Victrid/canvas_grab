@@ -5,12 +5,12 @@ from .snapshot_file import from_canvas_file
 from .snapshot_link import SnapshotLink
 from ..request_batcher import RequestBatcher
 from canvasapi.exceptions import ResourceDoesNotExist
-
+from ..utils import normalize_path, file_regex
 
 class CanvasFileSnapshot(Snapshot):
     """Takes a snapshot of files on Canvas, organized by file tab.
 
-    CanvasFileSnapshot generates a snapshot of files on Canvas. In this snapshot mode,
+    ``CanvasFileSnapshot`` generates a snapshot of files on Canvas. In this snapshot mode,
     all files under "File" tab will be scanned as-is. Besides, it will add pages into
     the snapshot at `pages/xxx` path, if `with_link` option is enabled.
     """
@@ -48,9 +48,15 @@ class CanvasFileSnapshot(Snapshot):
         Returns:
             dict: snapshot of Canvas in `SnapshotFile` or `SnapshotLink` type.
         """
+        for _ in self.yield_take_snapshot():
+            pass
+        return self.get_snapshot()
+
+    def yield_take_snapshot(self):
         course = self.course
         request_batcher = RequestBatcher(course)
 
+        yield (0, '请稍候', '正在获取文件列表')
         files = request_batcher.get_files()
         if files is None:
             raise ResourceDoesNotExist("File tab is not supported.")
@@ -58,24 +64,26 @@ class CanvasFileSnapshot(Snapshot):
         folders = request_batcher.get_folders()
 
         for _, file in files.items():
-            folder = folders[file.folder_id].full_name + "/"
+            folder = normalize_path(folders[file.folder_id].full_name) + "/"
             if folder.startswith("course files/"):
                 folder = folder[len("course files/"):]
             snapshot_file = from_canvas_file(file)
-            filename = f'{folder}{snapshot_file.name}'
+            filename = f'{folder}{normalize_path(snapshot_file.name, file_regex)}'
             self.add_to_snapshot(filename, snapshot_file)
 
         print(f'  {len(files)} files in total')
+        yield (0.1, None, f'共 {len(files)} 个文件')
+
         if self.with_link:
+            yield (None, '正在解析链接', None)
             pages = request_batcher.get_pages() or []
             for page in pages:
-                key = f'pages/{page.title}.html'
+                key = f'pages/{normalize_path(page.title, file_regex)}.html'
                 value = SnapshotLink(
                     page.title, page.html_url, "Page")
                 self.add_to_snapshot(key, value)
             print(f'  {len(pages)} pages in total')
-
-        return self.snapshot
+            yield (0.2, '请稍候', f'共 {len(pages)} 个链接')
 
     def get_snapshot(self):
         """Get the previously-taken snapshot

@@ -4,14 +4,14 @@ from termcolor import colored
 from .snapshot import Snapshot
 from .snapshot_file import from_canvas_file
 from .snapshot_link import SnapshotLink
-from ..utils import file_regex
+from ..utils import normalize_path, file_regex
 from ..request_batcher import RequestBatcher
 
 
 class CanvasModuleSnapshot(Snapshot):
     """Take a snapshot of files on Canvas, organized by module tab.
 
-    CanvasModuleSnapshot generates a snapshot of Canvas by scanning the module tab.
+    ``CanvasModuleSnapshot`` generates a snapshot of Canvas by scanning the module tab.
     This is useful if 1) "File" tab is not available 2) Users want to organize files
     by module. If "File" tab is available, the snapshot-taker will first acquire all
     files in "File" tab, which batches the requests and greatly improves performance.
@@ -47,12 +47,20 @@ class CanvasModuleSnapshot(Snapshot):
 
          Returns:
              dict: snapshot of Canvas in `SnapshotFile` or `SnapshotLink` type.
-         """
+        """
+        for _ in self.yield_take_snapshot():
+            pass
+        return self.get_snapshot()
+
+    def yield_take_snapshot(self):
         course = self.course
         request_batcher = RequestBatcher(course)
         accessed_files = []
+        yield (0, '请稍候', '正在获取模块列表')
 
-        for _, module in (request_batcher.get_modules() or {}).items():
+        modules = (request_batcher.get_modules() or {}).items()
+        download_idx = 0
+        for _, module in modules:
             # replace invalid characters in name
             name = re.sub(file_regex, "_", module.name)
             # consolidate spaces
@@ -68,17 +76,20 @@ class CanvasModuleSnapshot(Snapshot):
             print(
                 f'  Module {colored(module_name, "cyan")} ({module_item_count} items)')
 
+            yield (download_idx / len(modules) * 0.2, '正在获取模块列表', f'{module_name} (包含 {module_item_count} 个对象)')
+            download_idx += 1
+
             for item in module.get_module_items():
                 if item.type == 'File':
                     file_id = item.content_id
                     snapshot_file = from_canvas_file(
                         request_batcher.get_file(file_id))
                     accessed_files.append(file_id)
-                    filename = f'{module_name}/{snapshot_file.name}'
+                    filename = f'{module_name}/{normalize_path(snapshot_file.name, file_regex)}'
                     self.add_to_snapshot(filename, snapshot_file)
                 if self.with_link:
                     if item.type == 'ExternalUrl' or item.type == 'Page':
-                        key = f'{module_name}/{item.title}.html'
+                        key = f'{module_name}/{normalize_path(item.title, file_regex)}.html'
                         value = SnapshotLink(
                             item.title, item.html_url, module_name)
                         self.add_to_snapshot(key, value)
@@ -89,13 +100,12 @@ class CanvasModuleSnapshot(Snapshot):
             for file_id, file in files.items():
                 if file_id not in accessed_files:
                     snapshot_file = from_canvas_file(file)
-                    filename = f'unmoduled/{snapshot_file.name}'
+                    filename = f'unmoduled/{normalize_path(snapshot_file.name, file_regex)}'
                     self.add_to_snapshot(filename, snapshot_file)
                     unmoduled_files += 1
             print(
                 f'  {colored("Unmoduled files", "cyan")} ({unmoduled_files} items)')
-
-        return self.snapshot
+            yield (0.2, '正在获取模块列表', f'还有 {unmoduled_files} 个不在模块中的文件')
 
     def get_snapshot(self):
         """Get the previously-taken snapshot
